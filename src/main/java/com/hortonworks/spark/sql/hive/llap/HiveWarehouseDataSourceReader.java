@@ -142,29 +142,47 @@ public class HiveWarehouseDataSourceReader
             toArray(Filter[]::new);
   }
 
-  @Override public Filter[] pushedFilters() {
+  @Override
+  public Filter[] pushedFilters() {
     return pushedFilters;
   }
 
-  @Override public void pruneColumns(StructType requiredSchema) {
+  @Override
+  public void pruneColumns(StructType requiredSchema) {
     this.schema = requiredSchema;
   }
 
   public List<InputPartition<ColumnarBatch>> createBatchDataReaderFactories() {
+    LOG.info("this.schema = {}", schema);
+    LOG.info("this.pushedFilters = {}", Arrays.toString(pushedFilters));
+
+    String queryString;
     try {
-      boolean countStar = this.schema.length() == 0;
-      String queryString = getQueryString(SchemaUtil.columnNames(schema), pushedFilters);
-      List<InputPartition<ColumnarBatch>> factories = new ArrayList<>();
-      if (countStar) {
-        LOG.info("Executing count with query: {}", queryString);
-        factories.addAll(getCountStarFactories(queryString));
-      } else {
-        factories.addAll(getSplitsFactories(queryString));
-      }
-      return factories;
+      queryString = getQueryString(SchemaUtil.columnNames(schema), pushedFilters);
     } catch (Exception e) {
+      LOG.error("getQueryString", e);
       throw new RuntimeException(e);
     }
+
+    boolean countStar = schema.isEmpty();
+    List<InputPartition<ColumnarBatch>> factories = new ArrayList<>();
+    if (countStar) {
+      LOG.info("Executing count with query: {}", queryString);
+      try {
+        factories.addAll(getCountStarFactories(queryString));
+      } catch (Exception e) {
+        LOG.error("getCountStarFactories", e);
+        throw new RuntimeException(e);
+      }
+    } else {
+      try {
+        factories.addAll(getSplitsFactories(queryString));
+      } catch (Exception e) {
+        LOG.error("getSplitsFactories", e);
+        throw new RuntimeException(e);
+      }
+    }
+    return factories;
   }
 
   @Override public List<InputPartition<ColumnarBatch>>  planBatchInputPartitions(){
