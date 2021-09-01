@@ -17,9 +17,9 @@ public class SchemaUtil {
   public static StructType convertSchema(Schema schema) {
     List<FieldDesc> columns = schema.getColumns();
     List<String> types = new ArrayList<>();
-    for(FieldDesc fieldDesc : columns) {
+    for (FieldDesc fieldDesc : columns) {
       String name;
-      if(fieldDesc.getName().contains(".")) {
+      if (fieldDesc.getName().contains(".")) {
         name = fieldDesc.getName().split("\\.")[1];
       } else {
         name = fieldDesc.getName();

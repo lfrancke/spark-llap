@@ -104,6 +104,7 @@ public class MockHiveWarehouseConnector extends HiveWarehouseConnector {
       return new MockHiveWarehouseDataReaderFactory(split, jobConf, arrowAllocatorMax);
     }
 
+    @Override
     protected List<DataReaderFactory<ColumnarBatch>> getSplitsFactories(String query) {
       return Lists.newArrayList(new MockHiveWarehouseDataReaderFactory(null, null, 0));
     }

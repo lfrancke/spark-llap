@@ -1,38 +1,38 @@
 package com.hortonworks.spark.sql.hive.llap;
 
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 import com.hortonworks.spark.sql.hive.llap.util.JobUtil;
 import com.hortonworks.spark.sql.hive.llap.util.SchemaUtil;
 import org.apache.hadoop.hive.llap.LlapBaseInputFormat;
+import org.apache.hadoop.hive.llap.LlapInputSplit;
+import org.apache.hadoop.hive.llap.Schema;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.sources.v2.reader.InputPartition;
-import org.apache.spark.sql.sources.v2.reader.DataSourceReader;
 import org.apache.spark.sql.sources.v2.reader.SupportsPushDownFilters;
 import org.apache.spark.sql.sources.v2.reader.SupportsPushDownRequiredColumns;
 import org.apache.spark.sql.sources.v2.reader.SupportsScanColumnarBatch;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
-import org.apache.hadoop.hive.llap.LlapInputSplit;
-import org.apache.hadoop.hive.llap.Schema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Option;
 import scala.collection.Seq;
 
-import java.io.IOException;
-import java.sql.Connection;
-import java.sql.Driver;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Enumeration;
-import java.util.List;
-import java.util.Map;
 
 import static com.hortonworks.spark.sql.hive.llap.FilterPushdown.buildWhereClause;
-import static com.hortonworks.spark.sql.hive.llap.util.HiveQlUtil.*;
+import static com.hortonworks.spark.sql.hive.llap.util.HiveQlUtil.projections;
+import static com.hortonworks.spark.sql.hive.llap.util.HiveQlUtil.randomAlias;
+import static com.hortonworks.spark.sql.hive.llap.util.HiveQlUtil.selectProjectAliasFilter;
+import static com.hortonworks.spark.sql.hive.llap.util.HiveQlUtil.selectStar;
 import static com.hortonworks.spark.sql.hive.llap.util.JobUtil.replaceSparkHiveDriver;
 import static scala.collection.JavaConversions.asScalaBuffer;
 
@@ -44,33 +44,34 @@ import static scala.collection.JavaConversions.asScalaBuffer;
  * 5. Spark pulls factories, where factory/task are 1:1 -> createBatchDataReaderFactories(..)
  */
 public class HiveWarehouseDataSourceReader
-        implements DataSourceReader, SupportsPushDownRequiredColumns, SupportsScanColumnarBatch, SupportsPushDownFilters {
+    implements SupportsPushDownRequiredColumns, SupportsScanColumnarBatch, SupportsPushDownFilters {
 
   //The pruned schema
-  StructType schema = null;
+  private StructType schema;
 
   //The original schema
-  StructType baseSchema = null;
+  private StructType baseSchema;
 
   //Pushed down filters
   //
   //"It's possible that there is no filters in the query and pushFilters(Filter[])
   // is never called, empty array should be returned for this case."
-  Filter[] pushedFilters = new Filter[0];
+  private Filter[] pushedFilters = new Filter[0];
 
   //SessionConfigSupport options
-  Map<String, String> options;
+  private final Map<String, String> options;
 
-  private static Logger LOG = LoggerFactory.getLogger(HiveWarehouseDataSourceReader.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HiveWarehouseDataSourceReader.class);
 
-  public HiveWarehouseDataSourceReader(Map<String, String> options) throws IOException {
+  public HiveWarehouseDataSourceReader(Map<String, String> options) {
     this.options = options;
   }
 
   //if(schema is empty) -> df.count()
   //else if(using table option) -> select *
   //else -> SELECT <COLUMNS> FROM (<RAW_SQL>) WHERE <FILTER_CLAUSE>
-  String getQueryString(String[] requiredColumns, Filter[] filters) throws Exception {
+  private String getQueryString(String[] requiredColumns, Filter[] filters) {
+
     String selectCols = "count(*)";
     if (requiredColumns.length > 0) {
       selectCols = projections(requiredColumns);
@@ -87,7 +88,7 @@ public class HiveWarehouseDataSourceReader
     return selectProjectAliasFilter(selectCols, baseQuery, randomAlias(), whereClause);
   }
 
-  private StatementType getQueryType() throws Exception {
+  private StatementType getQueryType() {
     return StatementType.fromOptions(options);
   }
 
@@ -112,17 +113,19 @@ public class HiveWarehouseDataSourceReader
       Schema schema = schemaSplit.getSchema();
       return SchemaUtil.convertSchema(schema);
     } finally {
-      if(llapInputFormat != null) {
+      if (llapInputFormat != null) {
         close();
       }
     }
   }
 
-  @Override public StructType readSchema() {
+  @Override
+  public StructType readSchema() {
     try {
       if (schema == null) {
-        this.schema = getTableSchema();
-        this.baseSchema = this.schema;
+        schema = getTableSchema();
+        baseSchema = schema;
+        LOG.info("!!!! Schema = {}", schema);
       }
       return schema;
     } catch (Exception e) {
@@ -132,14 +135,15 @@ public class HiveWarehouseDataSourceReader
   }
 
   //"returns unsupported filters."
-  @Override public Filter[] pushFilters(Filter[] filters) {
+  @Override
+  public Filter[] pushFilters(Filter[] filters) {
     pushedFilters = Arrays.stream(filters).
-            filter((filter) -> FilterPushdown.buildFilterExpression(baseSchema, filter).isDefined()).
-            toArray(Filter[]::new);
+        filter(filter -> FilterPushdown.buildFilterExpression(baseSchema, filter).isDefined()).
+        toArray(Filter[]::new);
 
     return Arrays.stream(filters).
-            filter((filter) -> !FilterPushdown.buildFilterExpression(baseSchema, filter).isDefined()).
-            toArray(Filter[]::new);
+        filter(filter -> !FilterPushdown.buildFilterExpression(baseSchema, filter).isDefined()).
+        toArray(Filter[]::new);
   }
 
   @Override
@@ -149,10 +153,12 @@ public class HiveWarehouseDataSourceReader
 
   @Override
   public void pruneColumns(StructType requiredSchema) {
-    this.schema = requiredSchema;
+    schema = requiredSchema;
   }
 
-  public List<InputPartition<ColumnarBatch>> createBatchDataReaderFactories() {
+  private List<InputPartition<ColumnarBatch>> createBatchDataReaderFactories() {
+    // Populate the schema
+    readSchema();
     LOG.info("this.schema = {}", schema);
     LOG.info("this.pushedFilters = {}", Arrays.toString(pushedFilters));
 
@@ -185,7 +191,8 @@ public class HiveWarehouseDataSourceReader
     return factories;
   }
 
-  @Override public List<InputPartition<ColumnarBatch>>  planBatchInputPartitions(){
+  @Override
+  public List<InputPartition<ColumnarBatch>> planBatchInputPartitions() {
     return createBatchDataReaderFactories();
   }
 
@@ -215,19 +222,19 @@ public class HiveWarehouseDataSourceReader
     long count = getCount(query);
     String numTasksString = HWConf.COUNT_TASKS.getFromOptionsMap(options);
     int numTasks = Integer.parseInt(numTasksString);
-    long numPerTask = count/(numTasks - 1);
-    long numLastTask = count % (numTasks - 1);
-    for(int i = 0; i < (numTasks - 1); i++) {
+    long numPerTask = count / (numTasks - 1);
+    for (int i = 0; i < (numTasks - 1); i++) {
       tasks.add(new CountDataReaderFactory(numPerTask));
     }
+    long numLastTask = count % (numTasks - 1);
     tasks.add(new CountDataReaderFactory(numLastTask));
     return tasks;
   }
 
   protected long getCount(String query) {
-    try(Connection conn = getConnection()) {
+    try (Connection conn = getConnection()) {
       DriverResultSet rs = DefaultJDBCWrapper.executeStmt(conn, HWConf.DEFAULT_DB.getFromOptionsMap(options), query,
-              Long.parseLong(HWConf.MAX_EXEC_RESULTS.getFromOptionsMap(options)));
+          Long.parseLong(HWConf.MAX_EXEC_RESULTS.getFromOptionsMap(options)));
       return rs.getData().get(0).getLong(0);
     } catch (SQLException e) {
       LOG.error("Failed to connect to HS2", e);
@@ -242,7 +249,7 @@ public class HiveWarehouseDataSourceReader
     return DefaultJDBCWrapper.getConnector(Option.empty(), url, user, dbcp2Configs);
   }
 
-  private long getArrowAllocatorMax () {
+  private long getArrowAllocatorMax() {
     String arrowAllocatorMaxString = HWConf.ARROW_ALLOCATOR_MAX.getFromOptionsMap(options);
     long arrowAllocatorMax = (Long) HWConf.ARROW_ALLOCATOR_MAX.defaultValue;
     if (arrowAllocatorMaxString != null) {
